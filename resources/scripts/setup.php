@@ -118,6 +118,31 @@ final class FileSystem
     }
 }
 
+final class Shell
+{
+    /** @throws ExecFailedException */
+    public static function passthru(string ...$args): void
+    {
+        $command = \implode(' ', \array_map('escapeshellarg', $args));
+        \passthru($command, $exitCode);
+
+        if ($exitCode !== 0) {
+            throw new ExecFailedException('Command "%s" exited with code %d', $command, (string)$exitCode);
+        }
+    }
+
+    /** @throws ExecFailedException */
+    public static function exec(string ...$args): void
+    {
+        $command = \implode(' ', \array_map('escapeshellarg', $args));
+        \exec($command, $output, $exitCode);
+
+        if ($exitCode !== 0) {
+            throw new ExecFailedException('Command "%s" exited with code %d', $command, (string)$exitCode);
+        }
+    }
+}
+
 /**
  * @property-read string $appName
  * @property-read string $domainName
@@ -274,15 +299,36 @@ function output_error(string $format, string ...$args): int
 function try_passthru(string ...$args): void
 {
     $command = \implode(' ', \array_map('escapeshellarg', $args));
-    \passthru($command, $exitCode);
+    Shell::passthru($command, $exitCode);
 
     if ($exitCode !== 0) {
         throw new ExecFailedException('Command "%s" exited with code %d', $command, (string)$exitCode);
     }
 }
 
+/** @throws InitFailedException */
+function get_certbot_cmd(): string
+{
+    foreach (['certbot', 'certbot-auto'] as $cmd) {
+        try {
+            Shell::exec($cmd, '--version');
+            return $cmd;
+        } catch (ExecFailedException $e) { }
+    }
+
+    throw new InitFailedException('Cannot locate a usable certbot command');
+}
+
 try {
     $params = new SetupParams();
+
+    // try to get the cert first
+    Shell::passthru(
+        get_certbot_cmd(), 'certonly', '--webroot',
+        '--cert-name', $params->appName, // The name of cert under /etc/letsencrypt
+        '-w', $params->certRootDir,      // The web root of http:// access
+        '-d', $params->domainName        // The primary domain name for the cert
+    );
 
     FileSystem::mkdir($params->confDir, 0755);
 
@@ -294,15 +340,7 @@ try {
     FileSystem::mkdir("{$params->tmpDir}/wsdlcache", 0755);
     FileSystem::mkdir("{$params->tmpDir}/opcache", 0755);
 
-    try_passthru('git', 'clone', GIT_URL, $params->appDir);
-
-    try_passthru(
-        'certbot', 'certonly',
-        '--webroot',
-        '--cert-name', $params->appName, // The name of cert under /etc/letsencrypt
-        '-w', $params->certRootDir,      // The web root of http:// access
-        '-d', $params->domainName        // The primary domain name for the cert
-    );
+    Shell::passthru('git', 'clone', GIT_URL, $params->appDir);
 
     foreach (['nginx', 'fpm', 'logrotate'] as $file) {
         (new Template("{$params->appDir}/resources/conf/{$file}.conf"))
@@ -313,8 +351,8 @@ try {
     FileSystem::symlink("{$params->confDir}/fpm.conf", "{$params->fpmConfDir}/{$params->appName}.conf");
     FileSystem::symlink("{$params->confDir}/logrotate.conf", "/etc/logrotate.d/{$params->appName}.conf");
 
-    try_passthru('service', 'nginx', 'reload');
-    try_passthru('service', 'php-fpm', 'reload');
+    Shell::passthru('service', 'nginx', 'reload');
+    Shell::passthru('service', 'php-fpm', 'reload');
 } catch (InitFailedException $e) {
     exit(output_error('Initialization failed: %s', $e->getMessage()));
 } catch (SetupException $e) {
