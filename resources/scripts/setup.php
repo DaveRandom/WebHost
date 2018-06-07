@@ -45,7 +45,7 @@ final class SetupParams
     /** @throws InitFailedException */
     private function parseOptions(int &$last = null): array
     {
-        if (!$args = \getopt('', self::OPTIONS, $last)) {
+        if (false === $args = \getopt('', self::OPTIONS, $last)) {
             throw new InitFailedException('Parsing command line options failed');
         }
 
