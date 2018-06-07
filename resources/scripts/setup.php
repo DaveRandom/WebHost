@@ -156,7 +156,7 @@ function try_passthru(string ...$args): void
     \passthru($command, $exitCode);
 
     if ($exitCode !== 0) {
-        throw new ExecFailedException('Command "%s" exited with code %d', $command, $exitCode);
+        throw new ExecFailedException('Command "%s" exited with code %d', $command, (string)$exitCode);
     }
 }
 
