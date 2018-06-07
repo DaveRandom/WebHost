@@ -135,7 +135,7 @@ final class Shell
     public static function exec(string ...$args): void
     {
         $command = \implode(' ', \array_map('escapeshellarg', $args));
-        \exec($command, $output, $exitCode);
+        \exec("{$command} 2>&1", $output, $exitCode);
 
         if ($exitCode !== 0) {
             throw new ExecFailedException('Command "%s" exited with code %d', $command, (string)$exitCode);
@@ -237,12 +237,14 @@ final class SetupParams
     {
         return [
             'APP_NAME' => $this->appName,
-            'APP_DIR'  => $this->appDir,
+            'PRIMARY_DOMAIN' => $this->domainName,
+            'APP_DIR' => $this->appDir,
             'CONF_DIR' => $this->confDir,
             'LOGS_DIR' => $this->logsDir,
-            'TMP_DIR'  => $this->tmpDir,
+            'LOGS_ARCHIVE_DIR' => $this->logsArchiveDir,
+            'TMP_DIR' => $this->tmpDir,
             'FPM_SOCK' => "/var/run/php-fpm/{$this->appName}.sock",
-            'PRIMARY_DOMAIN' => $this->domainName,
+            'NGINX_USER' => $this->nginxUser,
         ];
     }
 }
@@ -294,17 +296,6 @@ function output_error(string $format, string ...$args): int
 {
     \fprintf(\STDERR, \rtrim($format) . "\n", ...$args);
     return 1;
-}
-
-/** @throws ExecFailedException */
-function try_passthru(string ...$args): void
-{
-    $command = \implode(' ', \array_map('escapeshellarg', $args));
-    Shell::passthru($command, $exitCode);
-
-    if ($exitCode !== 0) {
-        throw new ExecFailedException('Command "%s" exited with code %d', $command, (string)$exitCode);
-    }
 }
 
 /** @throws InitFailedException */
