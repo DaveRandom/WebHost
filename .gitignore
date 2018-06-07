@@ -1,0 +1,6 @@
+/.idea
+/vendor
+/composer.lock
+/config.php
+/server_name.conf
+/public/.well-known
