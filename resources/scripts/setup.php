@@ -10,28 +10,145 @@ abstract class SetupException extends \Exception
         parent::__construct(\vsprintf($format, $args));
     }
 }
+abstract class FileSystemOperationFailedException extends SetupException {}
 final class InitFailedException extends SetupException {}
-final class MkDirFailedException extends SetupException {}
-final class RealPathFailedException extends SetupException {}
+final class ChModFailedException extends FileSystemOperationFailedException {}
+final class ChOwnFailedException extends FileSystemOperationFailedException {}
+final class ChGrpFailedException extends FileSystemOperationFailedException {}
+final class MkDirFailedException extends FileSystemOperationFailedException {}
+final class SymLinkFailedException extends FileSystemOperationFailedException {}
+final class RealPathFailedException extends FileSystemOperationFailedException {}
+final class FileReadFailedException extends FileSystemOperationFailedException {}
+final class FileWriteFailedException extends FileSystemOperationFailedException {}
 final class ExecFailedException extends SetupException {}
+final class TemplateRenderFailedException extends SetupException {}
+
+final class FileSystem
+{
+    private static function formatMode(int $mode): string
+    {
+        $result = '';
+
+        for ($i = 9; $i > 0; $i--) {
+            $result .= ($mode & (1 << ($i - 1)))
+                ? 'rxw'[$i % 3]
+                : '-';
+        }
+
+        return $result;
+    }
+
+    /**
+     * @throws ChGrpFailedException
+     * @throws ChModFailedException
+     * @throws ChOwnFailedException
+     * @throws MkDirFailedException
+     */
+    public static function mkdir(string $path, ?int $mode = 0755, string $owner = null, string $group = null): void
+    {
+        $mode = $mode ?? 0755;
+
+        if (!\file_exists($path) && !\mkdir($path, $mode, true)) {
+            throw new MkDirFailedException('Failed to create directory %s with mode %s', $path, self::formatMode($mode));
+        }
+
+        if (!\is_dir($path)) {
+            throw new MkDirFailedException('Path %s exists and is not a directory', $path);
+        }
+
+        self::chmod($path, $mode);
+
+        if ($owner !== null) {
+            self::chown($path, $owner);
+        }
+
+        if ($group !== null) {
+            self::chgrp($path, $group);
+        }
+    }
+
+    /** @throws RealPathFailedException */
+    public static function realpath(string $path): string
+    {
+        $result = \realpath($path);
+
+        if ($result === false) {
+            throw new RealPathFailedException("Path '%s' is invalid", $path);
+        }
+
+        return $result;
+    }
+
+    /** @throws ChModFailedException */
+    public static function chmod(string $path, int $mode): void
+    {
+        if (!\chmod($path, $mode)) {
+            throw new ChModFailedException('Failed to set %s to mode %s', $path, self::formatMode($mode));
+        }
+    }
+
+    /**
+     * @param string|int $owner
+     * @throws ChOwnFailedException
+     */
+    public static function chown(string $path, $owner): void
+    {
+        if (!\chown($path, $owner)) {
+            throw new ChOwnFailedException('Failed to change ownership of %s to %s', $path, $owner);
+        }
+    }
+
+    /**
+     * @param string|int $group
+     * @throws ChGrpFailedException
+     */
+    public static function chgrp(string $path, $group): void
+    {
+        if (!\chgrp($path, $group)) {
+            throw new ChGrpFailedException('Failed to change ownership of %s to %s', $path, $group);
+        }
+    }
+
+    /** @throws SymLinkFailedException */
+    public static function symlink(string $target, string $path): void
+    {
+        if (!\symlink($target, $path)) {
+            throw new SymLinkFailedException("Creating link to %s at %s failed", $target, $path);
+        }
+    }
+}
 
 /**
- * @property-read string $vhostsRoot
- * @property-read string $certRoot
+ * @property-read string $appName
  * @property-read string $domainName
- * @property-read string $projectRoot
+ * @property-read string $nginxUser
+ * @property-read string $nginxConfDir
+ * @property-read string $fpmConfDir
+ * @property-read string $vhostsRootDir
+ * @property-read string $certRootDir
+ * @property-read string $projectRootDir
+ * @property-read string $confDir
+ * @property-read string $logsDir
+ * @property-read string $logsArchiveDir
+ * @property-read string $tmpDir
+ * @property-read string $appDir
  */
 final class SetupParams
 {
     private const DNS_LABEL_EXPR = '(?:[a-z0-9]|[a-z0-9][a-z0-9\-]{0,61}[a-z0-9])';
     private const DNS_NAME_EXPR = '(?:' . self::DNS_LABEL_EXPR . '\.)*' . self::DNS_LABEL_EXPR;
 
-    private const VHOSTS_ROOT_ARG = 'vhostsroot';
-    private const CERT_ROOT_ARG = 'certroot';
+    private const APP_NAME_ARG = 'appname';
+    private const VHOSTS_ROOT_ARG = 'vhosts';
+    private const CERT_ROOT_ARG = 'cert';
+    private const NGINX_USER_ARG = 'nginx-user';
+    private const NGINX_CONF_ARG = 'nginx-conf';
+    private const FPM_CONF_ARG = 'fpm-conf';
 
     private const OPTIONS = [
         self::VHOSTS_ROOT_ARG . ':',
         self::CERT_ROOT_ARG . ':',
+        self::NGINX_USER_ARG . ':',
     ];
 
     /** @throws InitFailedException */
@@ -62,45 +179,86 @@ final class SetupParams
         return $name;
     }
 
-    /**
-     * @throws RealPathFailedException
-     */
-    private function tryRealPath(string $description, string $path): string
-    {
-        $result = \realpath($path);
-
-        if ($result === false) {
-            throw new RealPathFailedException("Path '%s' for %s is invalid", $path, $description);
-        }
-
-        return $result;
-    }
-
     /** @throws InitFailedException */
     public function __construct()
     {
         $this->assertRunningAsRoot();
 
         $args = $this->parseOptions($last);
-        $name = $GLOBALS['argv'][$last] ?? '';
 
-        $this->domainName = $this->validateDomainName($name);
+        $this->appName = $args[self::APP_NAME_ARG] ?? 'webhost';
+        $this->domainName = $this->validateDomainName($GLOBALS['argv'][$last] ?? $this->appName);
 
         try {
-            $this->vhostsRoot = $this->tryRealPath(
-                'virtual hosts root',
-                $args[self::VHOSTS_ROOT_ARG] ?? '/srv/www'
-            );
-
-            $this->certRoot = $this->tryRealPath(
-                'ACME auth web root',
-                $args[self::CERT_ROOT_ARG] ?? "{$this->vhostsRoot}/default/public"
-            );
+            $this->vhostsRootDir = FileSystem::realpath($args[self::VHOSTS_ROOT_ARG] ?? '/srv/www');
+            $this->certRootDir = FileSystem::realpath($args[self::CERT_ROOT_ARG] ?? "{$this->vhostsRootDir}/default/public");
+            $this->nginxConfDir = FileSystem::realpath($args[self::NGINX_CONF_ARG] ?? '/etc/nginx/conf.d');
+            $this->fpmConfDir = FileSystem::realpath($args[self::FPM_CONF_ARG] ?? '/etc/php-fpm.d');
         } catch (RealPathFailedException $e) {
             throw new InitFailedException($e->getMessage());
         }
 
-        $this->projectRoot = "{$this->vhostsRoot}/{$this->domainName}";
+        $this->nginxUser = $args[self::NGINX_USER_ARG] ?? 'nginx';
+
+        $this->projectRootDir = "{$this->vhostsRootDir}/{$this->appName}";
+        $this->appDir = "{$this->projectRootDir}/app";
+        $this->confDir = "{$this->projectRootDir}/conf";
+        $this->logsDir = "{$this->projectRootDir}/logs";
+        $this->logsArchiveDir = "{$this->logsDir}/archive";
+        $this->tmpDir = "{$this->projectRootDir}/tmp";
+    }
+
+    public function getTemplateVars(): array
+    {
+        return [
+            'APP_NAME' => $this->appName,
+            'APP_DIR'  => $this->appDir,
+            'CONF_DIR' => $this->confDir,
+            'LOGS_DIR' => $this->logsDir,
+            'TMP_DIR'  => $this->tmpDir,
+            'FPM_SOCK' => "/var/run/php-fpm/{$this->appName}.sock",
+        ];
+    }
+}
+
+final class Template
+{
+    private $data;
+
+    /**
+     * @throws RealPathFailedException
+     * @throws FileReadFailedException
+     */
+    public function __construct(string $path)
+    {
+        $path = FileSystem::realpath($path);
+
+        if (false === $this->data = \file_get_contents($path)) {
+            throw new FileReadFailedException('Failed to read contents of %s', $path);
+        }
+    }
+
+    public function render(array $vars): string
+    {
+        return \preg_replace_callback('(%([a-z_][a-z0-9_]*)%)i', $this->data, function($match) use($vars) {
+            if (!\array_key_exists($match[1], $vars)) {
+                throw new TemplateRenderFailedException("Template variable '%s' not defined", $match[1]);
+            }
+
+            return $vars[$match[1]];
+        });
+    }
+
+    /**
+     * @throws FileWriteFailedException
+     */
+    public function renderToFile(string $path, array $vars): void
+    {
+        $data = $this->render($vars);
+
+        if (!\file_put_contents($path, $data)) {
+            throw new FileWriteFailedException('Failed to write %d bytes to %s', \strlen($data), $path);
+        }
     }
 }
 
@@ -110,43 +268,6 @@ function output_error(string $format, string ...$args): int
 {
     \fprintf(\STDERR, \rtrim($format) . "\n", ...$args);
     return 1;
-}
-
-function format_fs_mode(int $mode): string
-{
-    $result = '';
-
-    for ($i = 9; $i > 0; $i--) {
-        $result .= ($mode & (1 << ($i - 1)))
-            ? 'rxw'[$i % 3]
-            : '-';
-    }
-
-    return $result;
-}
-
-/** @throws MkDirFailedException */
-function try_mkdir(string $path, int $mode, string $owner = null, string $group = null): void
-{
-    if (!\file_exists($path)) {
-        if (!\mkdir($path, $mode, true)) {
-            throw new MkDirFailedException('Failed to create directory %s with mode %s', $path, format_fs_mode($mode));
-        }
-    } else if (!\is_dir($path)) {
-        throw new MkDirFailedException('Path %s already exists and is not a directory', $path);
-    }
-
-    if (!\chmod($path, $mode)) {
-        throw new MkDirFailedException('Failed to set directory %s to mode %s', $path, format_fs_mode($mode));
-    }
-
-    if ($owner !== null && !\chown($path, $owner)) {
-        throw new MkDirFailedException('Failed to change ownership of directory %s to %s', $path, $owner);
-    }
-
-    if ($group !== null && !\chgrp($path, $group)) {
-        throw new MkDirFailedException('Failed to change group of directory %s to %s', $path, $group);
-    }
 }
 
 /** @throws ExecFailedException */
@@ -162,20 +283,40 @@ function try_passthru(string ...$args): void
 
 try {
     $params = new SetupParams();
+
+    FileSystem::mkdir($params->confDir, 0755);
+
+    FileSystem::mkdir($params->logsDir, 0775, null, $params->nginxUser);
+    FileSystem::mkdir($params->logsArchiveDir, 0755);
+
+    FileSystem::mkdir($params->tmpDir, 0755);
+    FileSystem::mkdir("{$params->tmpDir}/sessions", 0755);
+    FileSystem::mkdir("{$params->tmpDir}/wsdlcache", 0755);
+    FileSystem::mkdir("{$params->tmpDir}/opcache", 0755);
+
+    try_passthru('git', 'clone', GIT_URL, $params->appDir);
+
+    try_passthru(
+        'certbot', 'certonly',
+        '--webroot',
+        '--cert-name', $params->appName, // The name of cert under /etc/letsencrypt
+        '-w', $params->certRootDir,      // The web root of http:// access
+        '-d', $params->domainName        // The primary domain name for the cert
+    );
+
+    foreach (['nginx', 'fpm', 'logrotate'] as $file) {
+        (new Template("{$params->appDir}/resources/conf/{$file}.conf"))
+            ->renderToFile("{$params->confDir}/{$file}.conf", $params->getTemplateVars());
+    }
+
+    FileSystem::symlink("{$params->confDir}/nginx.conf", "{$params->nginxConfDir}/{$params->appName}.conf");
+    FileSystem::symlink("{$params->confDir}/fpm.conf", "{$params->fpmConfDir}/{$params->appName}.conf");
+    FileSystem::symlink("{$params->confDir}/logrotate.conf", "/etc/logrotate.d/{$params->appName}.conf");
+
+    try_passthru('service', 'nginx', 'reload');
+    try_passthru('service', 'php-fpm', 'reload');
 } catch (InitFailedException $e) {
     exit(output_error('Initialization failed: %s', $e->getMessage()));
-}
-
-try {
-    try_mkdir("{$params->projectRoot}/conf", 0755);
-    try_mkdir("{$params->projectRoot}/logs", 0775, null, 'nginx');
-    try_mkdir("{$params->projectRoot}/tmp",  0755);
-} catch (MkDirFailedException $e) {
-    exit(output_error($e->getMessage()));
-}
-
-try {
-    try_passthru('git', 'clone', GIT_URL, "{$params->projectRoot}/app");
-} catch (ExecFailedException $e) {
+} catch (SetupException $e) {
     exit(output_error($e->getMessage()));
 }
