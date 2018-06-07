@@ -242,6 +242,7 @@ final class SetupParams
             'LOGS_DIR' => $this->logsDir,
             'TMP_DIR'  => $this->tmpDir,
             'FPM_SOCK' => "/var/run/php-fpm/{$this->appName}.sock",
+            'PRIMARY_DOMAIN' => $this->domainName,
         ];
     }
 }
