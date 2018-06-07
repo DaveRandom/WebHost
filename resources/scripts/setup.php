@@ -265,13 +265,13 @@ final class Template
 
     public function render(array $vars): string
     {
-        return \preg_replace_callback('(%([a-z_][a-z0-9_]*)%)i', $this->data, function($match) use($vars) {
+        return \preg_replace_callback('(%([a-z_][a-z0-9_]*)%)i', function($match) use($vars) {
             if (!\array_key_exists($match[1], $vars)) {
                 throw new TemplateRenderFailedException("Template variable '%s' not defined", $match[1]);
             }
 
             return $vars[$match[1]];
-        });
+        }, $this->data);
     }
 
     /**
